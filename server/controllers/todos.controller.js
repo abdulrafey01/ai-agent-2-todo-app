@@ -39,7 +39,8 @@ const model = genAI.getGenerativeModel({
   When user wants to see all todos, use getAllTodos function.
   When user wants to delete todo based on id, use deleteTodo function.
   When user wants to delete todo based on some text, first search for the todo using searchTodos function and then use deleteTodo function to delete it.
-  When user wants to do multiple things, call the functions one by one.`,
+  When user wants to do multiple things, call the functions one by one.
+  `,
   tools: {
     functionDeclarations: [
       getTodosFunctionDeclarations,
@@ -57,56 +58,60 @@ export const todosController = async (req, res) => {
         message: "Message is required in the request body",
       });
     }
-
     const { message } = req.body;
 
     const chat = model.startChat({
       history: req.body.history,
     });
-    const result = await chat.sendMessage(message);
 
-    const calls = result.response.functionCalls();
+    let result = await chat.sendMessage(message);
+    let calls = result.response.functionCalls();
     console.log("calls", calls);
-
     if (calls?.length > 0) {
-      const records = [];
-      for (const call of calls) {
-        try {
-          const selectedFunction = functions[call.name];
-          if (!selectedFunction) {
-            throw new Error(`Function ${call.name} not found`);
-          }
+      while (true) {
+        const records = [];
+        for (const call of calls) {
+          try {
+            const selectedFunction = functions[call.name];
+            if (!selectedFunction) {
+              throw new Error(`Function ${call.name} not found`);
+            }
 
-          const functionResponse = await selectedFunction({ ...call.args });
-          records.push(functionResponse);
-          // console.log(`API response:  `, records);
-        } catch (functionError) {
-          console.error(
-            `Error executing function ${call.name}:`,
-            functionError
-          );
-          throw new Error(
-            `Failed to execute ${call.name}: ${functionError.message}`
-          );
+            const functionResponse = await selectedFunction({ ...call.args });
+            records.push(functionResponse);
+          } catch (functionError) {
+            console.error(
+              `Error executing function ${call.name}:`,
+              functionError
+            );
+            throw new Error(
+              `Failed to execute ${call.name}: ${functionError.message}`
+            );
+          }
+        }
+
+        // Send all function responses together
+        const functionResponses = calls.map((call, index) => ({
+          functionResponse: {
+            name: call.name,
+            response: { functionResponse: records[index] },
+          },
+        }));
+
+        result = await chat.sendMessage(functionResponses);
+        if (result.response.functionCalls()?.length > 0) {
+          calls = result.response.functionCalls();
+          continue;
+        } else {
+          break;
         }
       }
-
-      // Send all function responses together
-      const functionResponses = calls.map((call, index) => ({
-        functionResponse: {
-          name: call.name,
-          response: { functionResponse: records[index] },
-        },
-      }));
-
-      const gptResponse = await chat.sendMessage(functionResponses);
 
       // Get the latest todo list after any operation
       const latestTodos = await getAllTodos();
 
       res.status(200).json({
-        message: gptResponse.response.text(),
-        records,
+        message: result.response.text(),
         todos: latestTodos,
       });
     } else {
@@ -118,6 +123,7 @@ export const todosController = async (req, res) => {
       });
     }
   } catch (error) {
+    console.log("error", error);
     res.status(500).json({
       message: error.message,
     });
